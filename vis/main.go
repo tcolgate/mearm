@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"runtime"
 
 	"github.com/adammck/ik"
+
 	"github.com/g3n/engine/camera"
 	"github.com/g3n/engine/camera/control"
 	"github.com/g3n/engine/core"
@@ -123,17 +125,17 @@ func main() {
 		char := ev.(*window.CharEvent)
 		switch char.Char {
 		case 'h':
-			ctx.target.x -= 0.1
+			ctx.target.x -= 0.02
 		case 'l':
-			ctx.target.x += 0.1
+			ctx.target.x += 0.02
 		case 'j':
-			ctx.target.y -= 0.1
+			ctx.target.y -= 0.02
 		case 'k':
-			ctx.target.y += 0.1
+			ctx.target.y += 0.02
 		case 'i':
-			ctx.target.z -= 0.1
+			ctx.target.z -= 0.02
 		case 'm':
-			ctx.target.z += 0.1
+			ctx.target.z += 0.02
 		default:
 			return
 		}
@@ -148,10 +150,10 @@ func main() {
 	ctx.Orbit = control.NewOrbitControl(ctx.Camera, ctx.Win)
 
 	// Creates a wireframe sphere positioned at the center of the scene
-	geom := geometry.NewSphere(0.1, 16, 16, 0, math.Pi*2, 0, math.Pi)
+	geom := geometry.NewSphere(0.01, 8, 8, 0, math.Pi*2, 0, math.Pi)
 	mat := material.NewStandard(&math32.Color{1, 1, 1})
 	mat.SetSide(material.SideDouble)
-	mat.SetWireframe(true)
+	mat.SetWireframe(false)
 	sphere := graphic.NewMesh(geom, mat)
 	sphere.SetPosition(
 		float32(ctx.target.x),
@@ -159,6 +161,10 @@ func main() {
 		float32(ctx.target.z))
 
 	scene.Add(sphere)
+
+	armmat := material.NewStandard(&math32.Color{1, 1, 1})
+	armmat.SetSide(material.SideDouble)
+	armmat.SetWireframe(true)
 
 	armRoot := core.NewNode()
 
@@ -168,7 +174,7 @@ func main() {
 	len1 := float64(0.3)
 	// Creates a wireframe sphere positioned at the center of the scene
 	arm1 := geometry.NewBox(0.1, len1, 0.1, 1, 1, 1)
-	box1 := graphic.NewMesh(arm1, mat)
+	box1 := graphic.NewMesh(arm1, armmat)
 	box1.SetPosition(0, float32(len1/2), 0)
 	joint1.Add(box1)
 
@@ -176,10 +182,10 @@ func main() {
 	joint2.SetPosition(0, float32(len1/2), 0)
 	box1.Add(joint2)
 
-	len2 := float64(0.6)
+	len2 := float64(0.8)
 	// Creates a wireframe sphere positioned at the center of the scene
 	arm2 := geometry.NewBox(0.1, len2, 0.1, 1, 1, 1)
-	box2 := graphic.NewMesh(arm2, mat)
+	box2 := graphic.NewMesh(arm2, armmat)
 	box2.SetPosition(0, float32(len2/2), 0)
 	joint2.Add(box2)
 
@@ -187,18 +193,18 @@ func main() {
 	joint3.SetPosition(0, float32(len2/2), 0)
 	box2.Add(joint3)
 
-	len3 := float64(0.4)
+	len3 := float64(0.8)
 	arm3 := geometry.NewBox(0.1, len3, 0.1, 1, 1, 1)
-	box3 := graphic.NewMesh(arm3, mat)
+	box3 := graphic.NewMesh(arm3, armmat)
 	box3.SetPosition(0, float32(len3/2), 0)
 	joint3.Add(box3)
 
 	scene.Add(armRoot)
 
 	x := ik.MakeRootSegment(ik.MakeVector3(0, 0, 0))
-	a := ik.MakeSegment(x, ik.Euler(0, -80, 0), ik.Euler(0, 80, 0), ik.MakeVector3(0, len1, 0))
-	b := ik.MakeSegment(a, ik.Euler(0, 0, -135), ik.Euler(0, 0, 45), ik.MakeVector3(0, len2, 0))
-	c := ik.MakeSegment(b, ik.Euler(0, 0, -18), ik.Euler(0, 0, 72), ik.MakeVector3(0, len3, 0))
+	a := ik.MakeSegment(x, ik.Euler(0, -70, 0), ik.Euler(0, 70, 0), ik.MakeVector3(0, len1, 0))
+	b := ik.MakeSegment(a, ik.Euler(0, 0, -70), ik.Euler(0, 0, 0), ik.MakeVector3(0, len2, 0))
+	c := ik.MakeSegment(b, ik.Euler(0, 0, -120), ik.Euler(0, 0, -90), ik.MakeVector3(0, len3, 0))
 
 	target := ik.MakeVector3(ctx.target.x, ctx.target.y, ctx.target.z)
 	_, bestAngles := ik.Solve(x, target)
@@ -246,8 +252,21 @@ func main() {
 		joint3.SetRotationY(float32(bestAngles[2].Pitch))
 		joint3.SetRotationZ(float32(bestAngles[2].Bank))
 
+		base := 90 + (float32(bestAngles[0].Pitch) * 180 / math.Pi)
+		baseP := base / 180
+
+		right := 180 - (90 + (float32(bestAngles[1].Bank) * 180 / math.Pi))
+		rightP := right / 180
+
+		left := -1 * (180 - (right + (-1 * float32(bestAngles[2].Bank) * 180 / math.Pi)))
+		leftP := left / 180
+
+		fmt.Printf("b; %v (%v) r: %v (%v) l: %v (%v)\n", base, baseP, right, rightP, left, leftP)
+
 		// Render the scene using the specified camera
-		rend.Render(scene, camera)
+		//rend.Render(scene, camera)
+		rend.SetScene(scene)
+		rend.Render(camera)
 
 		// Update window and checks for I/O events
 		win.SwapBuffers()
