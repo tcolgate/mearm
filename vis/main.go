@@ -52,7 +52,7 @@ func main() {
 	}
 
 	ctx := &Context{
-		target: &target{0, 0, 0},
+		target: &target{0.8, 1.1, 0},
 	}
 	ctx.Win = win
 
@@ -276,7 +276,6 @@ func main() {
 
 // winResizeEvent is called when the window resize event is received
 func winResizeEvent(ctx *Context) {
-
 	// Sets view port
 	width, height := ctx.Win.GetSize()
 	ctx.GS.Viewport(0, 0, int32(width), int32(height))
