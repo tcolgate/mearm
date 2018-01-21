@@ -2,16 +2,18 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"sync"
-
-	"github.com/adammck/ik"
-	"github.com/jroimartin/gocui"
+	"time"
 
 	"gobot.io/x/gobot"
 	"gobot.io/x/gobot/drivers/gpio"
-	"gobot.io/x/gobot/platforms/raspi"
+
+	"github.com/adammck/ik"
+	"github.com/llgcode/draw2d/draw2dkit"
+
+	"github.com/tcolgate/mearm/bot/raspi"
+	"github.com/tcolgate/mearm/draw2dmearm"
 )
 
 type target struct {
@@ -26,152 +28,135 @@ type Context struct {
 	targets chan target
 }
 
-func main() {
-	g, err := gocui.NewGui(gocui.OutputNormal)
-	if err != nil {
-		log.Panicln(err)
-	}
-	defer g.Close()
+type arm struct {
+	r *raspi.Adaptor
 
-	ctx := &Context{
-		target:  target{0.8, 1.1, 0, 45},
-		//target:  target{90, 90, 45, 45},
-		targets: make(chan target, 1),
-	}
+	base  *gpio.ServoDriver
+	left  *gpio.ServoDriver
+	right *gpio.ServoDriver
+	claw  *gpio.ServoDriver
 
-	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
-		log.Panicln(err)
-	}
+	baseLen float64
+	seg1Len float64
+	seg2Len float64
 
-	g.SetKeybinding("", 'h', gocui.ModNone, ctx.KeyHandler('h'))
-	g.SetKeybinding("", 'l', gocui.ModNone, ctx.KeyHandler('l'))
-	g.SetKeybinding("", 'j', gocui.ModNone, ctx.KeyHandler('j'))
-	g.SetKeybinding("", 'k', gocui.ModNone, ctx.KeyHandler('k'))
-	g.SetKeybinding("", 'i', gocui.ModNone, ctx.KeyHandler('i'))
-	g.SetKeybinding("", 'm', gocui.ModNone, ctx.KeyHandler('m'))
-	g.SetKeybinding("", '+', gocui.ModNone, ctx.KeyHandler('+'))
-	g.SetKeybinding("", '-', gocui.ModNone, ctx.KeyHandler('-'))
+	rootSeg *ik.Segment
+	baseSeg *ik.Segment
+	seg1    *ik.Segment
+	seg2    *ik.Segment
 
+	drawz     float64
+	drawLift  float64
+	drawSleep time.Duration
+}
+
+func New() *arm {
 	r := raspi.NewAdaptor()
-	srvBase := gpio.NewServoDriver(r, "15")
-	srvBase.SetName("base")
-	srvBase.Start()
-	srvRight := gpio.NewServoDriver(r, "13")
-	srvRight.SetName("right")
-	srvRight.Start()
-	srvLeft := gpio.NewServoDriver(r, "7")
-	srvLeft.SetName("left")
-	srvLeft.Start()
-	srvClaw := gpio.NewServoDriver(r, "11")
-	srvClaw.SetName("claw")
-	srvClaw.Start()
+	a := &arm{
+		r:        r,
+		drawz:    0.8,
+		drawLift: 0.1,
+	}
 
-	len1 := 0.3
-	len2 := 0.8
-	len3 := 0.8
-	x := ik.MakeRootSegment(ik.MakeVector3(0, 0, 0))
-	a := ik.MakeSegment(x, ik.Euler(0, -70, 0), ik.Euler(0, 70, 0), ik.MakeVector3(0, len1, 0))
-	b := ik.MakeSegment(a, ik.Euler(0, 0, -70), ik.Euler(0, 0, 0), ik.MakeVector3(0, len2, 0))
-	c := ik.MakeSegment(b, ik.Euler(0, 0, -120), ik.Euler(0, 0, -90), ik.MakeVector3(0, len3, 0))
+	a.base = gpio.NewServoDriver(r, "15")
+	a.base.SetName("base")
+	a.base.Start()
+	a.right = gpio.NewServoDriver(r, "13")
+	a.right.SetName("right")
+	a.right.Start()
+	a.left = gpio.NewServoDriver(r, "7")
+	a.left.SetName("left")
+	a.left.Start()
+	a.claw = gpio.NewServoDriver(r, "11")
+	a.claw.SetName("claw")
+	a.claw.Start()
 
-	ctx.targets <- ctx.target
+	a.baseLen = 0.3
+	a.seg1Len = 0.8
+	a.seg2Len = 0.8
+
+	a.rootSeg = ik.MakeRootSegment(ik.MakeVector3(0, 0, 0))
+	a.baseSeg = ik.MakeSegment(a.rootSeg, ik.Euler(0, -70, 0), ik.Euler(0, 70, 0), ik.MakeVector3(0, a.baseLen, 0))
+	a.seg1 = ik.MakeSegment(a.baseSeg, ik.Euler(0, 0, -70), ik.Euler(0, 0, 0), ik.MakeVector3(0, a.seg1Len, 0))
+	a.seg2 = ik.MakeSegment(a.seg1, ik.Euler(0, 0, -120), ik.Euler(0, 0, -90), ik.MakeVector3(0, a.seg2Len, 0))
+
+	return a
+}
+
+func (a *arm) Target(x, y, z float64) {
+	fmt.Printf("Target: %v,%v,%v\n", x, y, z)
+	target := ik.MakeVector3(x, y, z)
+	_, bestAngles := ik.Solve(a.rootSeg, target)
+
+	// Restore the best Rotation
+	a.baseSeg.SetRotation(&bestAngles[0])
+	a.seg1.SetRotation(&bestAngles[1])
+	a.seg2.SetRotation(&bestAngles[2])
+
+	base := 90 + (float32(bestAngles[0].Pitch) * 180 / math.Pi)
+	a.base.Move(uint8(base))
+
+	right := 180 - (90 + (float32(bestAngles[1].Bank) * 180 / math.Pi))
+	a.right.Move(uint8(right))
+
+	left := -1 * (180 - (right + (-1 * float32(bestAngles[2].Bank) * 180 / math.Pi)))
+	a.left.Move(uint8(180 - left))
+
+	fmt.Printf("Angles %v,%v,%v\n", base, right, 180-left)
+
+	time.Sleep(500 * time.Millisecond)
+	//	a.base.Move(uint8(x))
+	//	a.right.Move(uint8(y))
+	//	a.left.Move(uint8(z))
+	// srvClaw.Move(uint8(t.claw))
+}
+
+func (a *arm) clawOpen(open float64) {
+	a.claw.Move(uint8(open))
+}
+
+func (a *arm) MoveTo(x, y float64) {
+	a.Target(a.drawz-a.drawLift, x, y)
+}
+
+func (a *arm) LineTo(x, y float64) {
+	a.Target(a.drawz, x, y)
+}
+
+func (a *arm) End() {
+}
+
+func main() {
+	arm := New()
 
 	work := func() {
-		for {
-			select {
-			case t := <-ctx.targets:
-				fmt.Printf("x: %.2f\n", t.x)
-				fmt.Printf("y: %.2f\n", t.y)
-				fmt.Printf("z: %.2f\n", t.z)
-				fmt.Printf("claw: %.2f\n", t.claw)
-
-				target := ik.MakeVector3(t.x, t.y, t.z)
-				_, bestAngles := ik.Solve(x, target)
-
-				// Restore the best Rotation
-				a.SetRotation(&bestAngles[0])
-				b.SetRotation(&bestAngles[1])
-				c.SetRotation(&bestAngles[2])
-
-				base := 90 + (float32(bestAngles[0].Pitch) * 180 / math.Pi)
-				//baseP := base / 180
-				srvBase.Move(uint8(base))
-				fmt.Printf("base: %v\n", base)
-
-				right := 180 - (90 + (float32(bestAngles[1].Bank) * 180 / math.Pi))
-				//rightP := right / 180
-				srvRight.Move(uint8(right))
-				fmt.Printf("right: %v\n", right)
-
-				left := -1 * (180 - (right + (-1 * float32(bestAngles[2].Bank) * 180 / math.Pi)))
-				//leftP := left / 180
-				srvLeft.Move(uint8(180 - left))
-				fmt.Printf("left: %v\n", 180 - left)
-
-/*
-				srvBase.Move(uint8(t.x))
-				srvRight.Move(uint8(t.y))
-				srvLeft.Move(uint8(t.z))
-*/
-				srvClaw.Move(uint8(t.claw))
-			}
-		}
+		fn(arm)
 	}
 
 	robot := gobot.NewRobot("srvbot",
-		[]gobot.Connection{r},
-		[]gobot.Device{srvBase, srvLeft, srvRight, srvClaw},
+		[]gobot.Connection{arm.r},
+		[]gobot.Device{arm.base, arm.left, arm.right, arm.claw},
 		work,
 	)
 
-	go robot.Start()
+	robot.Start()
 	defer robot.Stop()
-
-	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
-		log.Panicln(err)
-	}
 }
 
-func layout(g *gocui.Gui) error {
-	maxX, maxY := g.Size()
-	if v, err := g.SetView("hello", maxX/2-7, maxY/2, maxX/2+7, maxY/2+2); err != nil {
-		if err != gocui.ErrUnknownView {
-			return err
-		}
-		fmt.Fprintln(v, "Hello world!")
-	}
-	return nil
-}
+func fn(a *arm) {
+	gc := draw2dmearm.NewGraphicContext(a)
 
-func quit(g *gocui.Gui, v *gocui.View) error {
-	return gocui.ErrQuit
-}
+	gc.BeginPath() // Initialize a new path
+	draw2dkit.Circle(gc, 0, 0.50, 0.20)
+	gc.Stroke()
 
-func (ctx *Context) KeyHandler(c rune) func(g *gocui.Gui, v *gocui.View) error {
-	return func(g *gocui.Gui, v *gocui.View) error {
-		ctx.Lock()
-		defer ctx.Unlock()
-                delta := 0.02
-
-		switch c {
-		case 'h':
-			ctx.target.x -= delta
-		case 'l':
-			ctx.target.x += delta
-		case 'j':
-			ctx.target.y -= delta
-		case 'k':
-			ctx.target.y += delta
-		case 'i':
-			ctx.target.z -= delta
-		case 'm':
-			ctx.target.z += delta
-		case '-':
-			ctx.target.claw -= delta
-		case '+':
-			ctx.target.claw += delta
-		}
-		ctx.targets <- ctx.target
-		return nil
-	}
+	/*
+		gc.SetLineWidth(0)
+		gc.BeginPath() // Initialize a new path
+		gc.MoveTo(0, 0.3)
+		gc.LineTo(0, 0.6)
+		gc.LineTo(0, 0.8)
+		gc.LineTo(0.2, 0.8)
+		gc.Stroke()
+	*/
 }
